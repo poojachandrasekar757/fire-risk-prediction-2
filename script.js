@@ -319,48 +319,26 @@ if (combinedScore <= t.low) {
             }
         }
 async function savePrediction(combinedScore, finalRiskLevel) {
-    console.log("Sending prediction to backend...");
 
-    // Only store primitives, no image
     const prediction = {
+        id: Date.now(),
         username: localStorage.getItem("currentUser"),
-        timestamp: new Date(),
-        location: {
-            latitude: locationData.latitude,
-            longitude: locationData.longitude,
-            temp: locationData.temp,
-            humidity: locationData.humidity,
-            windSpeed: locationData.windSpeed,
-            vegetation: locationData.vegetation,
-            riskScore: locationData.riskScore,
-            riskLevel: locationData.riskLevel
-        },
+        timestamp: new Date().toISOString(),
+
+        location: locationData,
         combinedRiskScore: combinedScore,
         finalRiskLevel: finalRiskLevel,
-        userConfirmation: 'pending'
+        userConfirmation: "pending"
     };
 
-    try {
-        const response = await fetch(`${BASE_URL}/savePrediction`, {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify(prediction)
-        });
+    let predictions = JSON.parse(localStorage.getItem("predictions")) || [];
+    predictions.push(prediction);
 
-        console.log("Response received");
+    localStorage.setItem("predictions", JSON.stringify(predictions));
 
-        const result = await response.json();
-        console.log("Backend returned:", result);
+    currentPredictionId = prediction.id;
 
-        if (result.success) {
-            currentPredictionId = result.id;
-            console.log("Prediction saved with ID:", result.id);
-        } else {
-            console.error("Failed to save prediction to backend.");
-        }
-    } catch (error) {
-        console.error("Error sending prediction:", error);
-    }
+    console.log("Saved locally:", prediction);
 }
 async function confirmPrediction(confirmation) {
 
@@ -369,33 +347,39 @@ async function confirmPrediction(confirmation) {
         return;
     }
 
-    const response = await fetch(`${BASE_URL}/confirmPrediction`, {
-        method: "POST",
-        headers: {
-            "Content-Type": "application/json"
-        },
-        body: JSON.stringify({
-            id: currentPredictionId,
-            confirmation: confirmation
-        })
+    let predictions = JSON.parse(localStorage.getItem("predictions")) || [];
+
+    // Update the selected prediction
+    predictions = predictions.map(p => {
+
+        if (p.id === currentPredictionId) {
+            return {
+                ...p,
+                userConfirmation: confirmation,
+                confirmedAt: new Date().toISOString()
+            };
+        }
+
+        return p;
     });
 
-    const result = await response.json();
+    localStorage.setItem("predictions", JSON.stringify(predictions));
 
-    if (result.success) {
-        // 🔄 Refresh metrics and history automatically
-       await updateThresholds(confirmation);
-        await loadHistory();
-        await loadMetrics();
+    console.log("Feedback saved locally:", confirmation);
 
-        // Show success message instead of alert
-        const successMsg = document.getElementById('successMessage');
-        successMsg.classList.add('active');
-        setTimeout(() => successMsg.classList.remove('active'), 3000);
-    } else {
-        alert("Error confirming prediction.");
-    }
+    // Refresh UI
+    await loadHistory();
+    await loadMetrics();
+
+    // Show success message
+    const msg = document.getElementById("successMessage");
+    msg.classList.add("active");
+
+    setTimeout(() => {
+        msg.classList.remove("active");
+    }, 3000);
 }
+
         function calculateMetrics() {
             const confirmedPredictions = predictions.filter(p => p.userConfirmation !== 'pending');
             
@@ -442,62 +426,46 @@ async function confirmPrediction(confirmation) {
             };
         }
 async function loadMetrics() {
-    // Fetch all predictions from backend
-    const user = localStorage.getItem("currentUser");
 
-if (!user) {
-    console.error("No user found in localStorage");
-    return;
-}
+    let predictions = JSON.parse(localStorage.getItem("predictions")) || [];
 
-const response = await fetch(`${BASE_URL}/history/${user}`);
-const result = await response.json();
+    const confirmed = predictions.filter(p => p.userConfirmation !== "pending");
 
-const data = Array.isArray(result) ? result : [];
-    predictions = data; // Update local array with server data
+    let total = confirmed.length;
 
-    const confirmedPredictions = predictions.filter(p => p.userConfirmation !== 'pending');
+    let realFire = 0;
+    let falseAlarm = 0;
+    let correctNoFire = 0;
 
-    let totalPredictions = confirmedPredictions.length;
-    let truePositives = 0;
-    let falsePositives = 0;
-    let trueNegatives = 0;
-    let falseNegatives = 0;
+    confirmed.forEach(p => {
 
-    confirmedPredictions.forEach(pred => {
-        const systemPredictedFire = pred.combinedRiskScore > 8;
+        const systemFire = p.combinedRiskScore > 8;
 
-        if (systemPredictedFire && pred.userConfirmation === 'real_fire') {
-            truePositives++;
-        } else if (systemPredictedFire && pred.userConfirmation === 'false_alarm') {
-            falsePositives++;
-        } else if (!systemPredictedFire && pred.userConfirmation === 'no_fire') {
-            trueNegatives++;
-        } else if (!systemPredictedFire && pred.userConfirmation === 'real_fire') {
-            falseNegatives++;
+        if (systemFire && p.userConfirmation === "real_fire") {
+            realFire++;
+        }
+
+        if (systemFire && p.userConfirmation === "false_alarm") {
+            falseAlarm++;
+        }
+
+        if (!systemFire && p.userConfirmation === "no_fire") {
+            correctNoFire++;
         }
     });
 
-    const FIR = (falsePositives + trueNegatives) > 0
-        ? (falsePositives / (falsePositives + trueNegatives)) * 100
-        : 0;
+    // Accuracy calculation
+    const correct = realFire + correctNoFire;
 
-    const FRR = (truePositives + falseNegatives) > 0
-        ? (falseNegatives / (truePositives + falseNegatives)) * 100
-        : 0;
+    const accuracy = total > 0 ? (correct / total) * 100 : 0;
 
-    const accuracy = totalPredictions > 0
-        ? ((truePositives + trueNegatives) / totalPredictions) * 100
-        : 0;
-
-    document.getElementById('totalPredictions').textContent = totalPredictions;
-    document.getElementById('confirmedFires').textContent = truePositives;
-    document.getElementById('falseAlarms').textContent = falsePositives;
-    document.getElementById('missedDetections').textContent = falseNegatives;
-    document.getElementById('firRate').textContent = FIR.toFixed(2) + '%';
-    document.getElementById('frrRate').textContent = FRR.toFixed(2) + '%';
-    document.getElementById('accuracy').textContent = accuracy.toFixed(2) + '%';
+    // Update UI
+    document.getElementById("totalPredictions").textContent = total;
+    document.getElementById("confirmedFires").textContent = realFire;
+    document.getElementById("falseAlarms").textContent = falseAlarm;
+    document.getElementById("accuracy").textContent = accuracy.toFixed(2) + "%";
 }
+
 // 👇 ADD THIS HERE (top-level, not inside any function)
 function formatDate(timestamp) {
     try {
@@ -520,33 +488,30 @@ function formatDate(timestamp) {
         return "Invalid Date";
     }
 }
-
 async function loadHistory() {
 
     const user = localStorage.getItem("currentUser");
 
-    if (!user) {
-        console.error("No user found in localStorage");
-        return;
-    }
+    let predictions = JSON.parse(localStorage.getItem("predictions")) || [];
 
-    const response = await fetch(`${BASE_URL}/history/${user}`);
-    const result = await response.json();
-
-    const data = Array.isArray(result) ? result : [];
-
-    predictions = data;
+    const userData = predictions.filter(p => p.username === user);
 
     const historyList = document.getElementById("historyList");
 
-    historyList.innerHTML = data.map(pred => `
+    if (userData.length === 0) {
+        historyList.innerHTML = "<p>No predictions yet.</p>";
+        return;
+    }
+
+    historyList.innerHTML = userData.map(pred => `
         <div class="history-item">
             <h4>${pred.finalRiskLevel} Risk</h4>
-            <p><strong>Date:</strong> ${formatDate(pred.timestamp)}</p>
+            <p><strong>Date:</strong> ${new Date(pred.timestamp).toLocaleString()}</p>
             <p><strong>Status:</strong> ${pred.userConfirmation}</p>
         </div>
     `).join("");
 }
+
 function logout() {
     localStorage.clear();
     window.location.href = "login.html";
